@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Jobs Portal</title>
+    <style>
+        body { font-family: 'Roboto', sans-serif; background-color: #F3F2EF; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: auto; }
+        .search-bar { width: 100%; padding: 15px; border-radius: 30px; border: none; box-sizing: border-box; margin-bottom: 20px; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .job-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 15px; border: 1px solid #e0e0e0; }
+        .header { display: flex; align-items: center; margin-bottom: 15px; }
+        .header img { width: 50px; height: 50px; border-radius: 8px; margin-right: 15px; }
+        .title { font-size: 18px; font-weight: bold; margin: 0 0 5px 0; }
+        .company { color: #555; margin: 0; font-size: 14px; }
+        .btn-primary { background: #0A66C2; color: white; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; text-decoration: none; display: inline-block; }
+        .dropdown { margin-top: 10px; font-size: 14px; }
+        .dropdown a { display: block; color: #0A66C2; text-decoration: none; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <input type="text" id="searchInput" class="search-bar" placeholder="Search jobs..." onkeyup="fetchJobs()">
+        <div id="jobFeed">Loading jobs...</div>
+    </div>
+    <script>
+        async function fetchJobs() {
+            const query = document.getElementById('searchInput').value;
+            const url = query ? `http://127.0.0.1:8000/api/jobs?q=${query}` : 'http://127.0.0.1:8000/api/jobs';
+            try {
+                const response = await fetch(url);
+                const jobs = await response.json();
+                const feed = document.getElementById('jobFeed');
+                feed.innerHTML = '';
+                jobs.forEach(job => {
+                    const primarySource = job.sources.find(s => s.source_name === 'Company Site') || job.sources[0];
+                    const otherSources = job.sources.map(s => `<a href="${s.url}" target="_blank">Apply via ${s.source_name} ${s.is_easy_apply ? '⚡' : ''}</a>`).join('');
+                    feed.innerHTML += `
+                        <div class="job-card">
+                            <div class="header">
+                                <img src="${job.logo}" alt="logo">
+                                <div><h3 class="title">${job.title}</h3><p class="company">${job.company} • ${job.location}</p></div>
+                            </div>
+                            <a href="${primarySource.url}" target="_blank" class="btn-primary">Apply via ${primarySource.source_name}</a>
+                            <div class="dropdown"><strong>Other options:</strong><br>${otherSources}</div>
+                        </div>`;
+                });
+            } catch (error) { document.getElementById('jobFeed').innerText = "Make sure your Python backend is running!"; }
+        }
+        fetchJobs();
+    </script>
+</body>
+</html>
