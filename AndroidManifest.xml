@@ -1,0 +1,156 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="job_aggregator"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        ```
+
+### 3. `main.py` (The Production Python Backend)
+This backend uses SQLite to store jobs, sources, users, and saved jobs. It also includes the live Google Jobs scraper function and the search API.
+
+```python
+from fastapi import FastAPI, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import create_engine, Column, String, Boolean, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from pydantic import BaseModel
+import requests
+import hashlib
+
+# --- DATABASE CONFIGURATION ---
+SQLALCHEMY_DATABASE_URL = "sqlite:///./universal_jobs.db"
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# --- DATABASE SCHEMA ---
+class DBJob(Base):
+    __tablename__ = "jobs"
+    id = Column(String, primary_key=True, index=True)
+    company = Column(String)
+    title = Column(String)
+    location = Column(String)
+    description = Column(String)
+    salary_range = Column(String, default="Not Disclosed")
+
+class DBJobSource(Base):
+    __tablename__ = "job_sources"
+    id = Column(String, primary_key=True)
+    job_id = Column(String, ForeignKey("jobs.id"))
+    source_name = Column(String)
+    url = Column(String)
+    is_easy_apply = Column(Boolean, default=False)
+
+class DBUser(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True)
+    name = Column(String)
+    headline = Column(String)
+    resume_url = Column(String, nullable=True)
+
+class DBSavedJob(Base):
+    __tablename__ = "saved_jobs"
+    id = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"))
+    job_id = Column(String, ForeignKey("jobs.id"))
+    status = Column(String, default="Saved")
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def generate_fingerprint(company: str, title: str, location: str) -> str:
+    raw_string = f"{company.lower().strip()}|{title.lower().strip()}|{location.lower().strip()}"
+    return hashlib.md5(raw_string.encode()).hexdigest()
+
+# --- LIVE SCRAPER ---
+def scrape_live_jobs(db: Session, query: str, location: str):
+    api_key = "YOUR_SERPAPI_KEY" # Replace with your SerpApi key
+    if api_key == "YOUR_SERPAPI_KEY":
+        return
+        
+    url = f"https://serpapi.com/search.json?engine=google_jobs&q={query}&location={location}&api_key={api_key}"
+    try:
+        response = requests.get(url)
+        results = response.json().get("jobs_results", [])
+        
+        for job in results:
+            company_name = job.get("company_name", "Unknown")
+            title = job.get("title", "Unknown")
+            loc = job.get("location", location)
+            job_url = job.get("share_link", "https://google.com")
+            
+            fingerprint = generate_fingerprint(company_name, title, loc)
+            existing_job = db.query(DBJob).filter(DBJob.id == fingerprint).first()
+            
+            if not existing_job:
+                new_job = DBJob(id=fingerprint, company=company_name, title=title, location=loc, description=job.get("description", "")[:200])
+                db.add(new_job)
+                db.commit()
+                
+            source_id = hashlib.md5(f"{fingerprint}{job_url}".encode()).hexdigest()
+            if not db.query(DBJobSource).filter(DBJobSource.id == source_id).first():
+                new_source = DBJobSource(id=source_id, job_id=fingerprint, source_name="External Portal", url=job_url, is_easy_apply=False)
+                db.add(new_source)
+                db.commit()
+    except Exception as e:
+        print(f"Scraper Error: {e}")
+
+# --- API ENDPOINTS ---
+@app.post("/api/trigger-scraper")
+def trigger_scraper(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    background_tasks.add_task(scrape_live_jobs, db, "ServiceNow Developer", "Hyderabad, Telangana")
+    return {"status": "Scraper started"}
+
+@app.get("/api/jobs")
+def get_jobs(q: str = None, db: Session = Depends(get_db)):
+    query = db.query(DBJob)
+    if q:
+        search_term = f"%{q.lower()}%"
+        query = query.filter(DBJob.title.ilike(search_term) | DBJob.company.ilike(search_term))
+    
+    jobs = query.all()
+    result = []
+    for j in jobs:
+        sources = db.query(DBJobSource).filter(DBJobSource.job_id == j.id).all()
+        result.append({
+            "id": j.id,
+            "company": j.company,
+            "logo": f"https://logo.clearbit.com/{j.company.replace(' ', '').lower()}.com",
+            "title": j.title,
+            "location": j.location,
+            "description": j.description,
+            "salary_range": j.salary_range,
+            "sources": [{"source_name": s.source_name, "url": s.url, "is_easy_apply": s.is_easy_apply} for s in sources]
+        })
+    return result
+
+# --- SEED INITIAL DATA FOR TESTING ---
+def seed_data():
+    db = SessionLocal()
+    if not db.query(DBJob).first():
+        f1 = generate_fingerprint("Deloitte", "ServiceNow Developer", "Hyderabad, India")
+        db.add(DBJob(id=f1, company="Deloitte", title="ServiceNow Developer", location="Hyderabad, India", description="Manage ITSM modules.", salary_range="₹12L - ₹18L"))
+        db.add(DBJobSource(id="s1", job_id=f1, source_name="Company Site", url="https://deloitte.com", is_easy_apply=False))
+        db.add(DBJobSource(id="s2", job_id=f1, source_name="LinkedIn", url="https://linkedin.com", is_easy_apply=True))
+        db.commit()
+    db.close()
+seed_data()
